@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>withlove</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -17,74 +16,99 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 2rem;
+    gap: 1.75rem;
+    padding: 2rem;
     user-select: none;
   }
 
   #status {
-    font-size: 0.7rem;
+    font-size: 0.65rem;
     letter-spacing: 0.15em;
     text-transform: uppercase;
-    color: #444;
+    color: #333;
     transition: color 0.3s;
   }
-  #status.connected { color: #4ade80; }
+  #status.connected  { color: #4ade80; }
   #status.connecting { color: #facc15; }
 
-  #bpm-display {
+  .metrics {
     display: flex;
-    align-items: baseline;
-    gap: 0.6rem;
+    gap: 4.5rem;
+    align-items: flex-end;
   }
 
-  #bpm {
-    font-size: 9rem;
+  .metric {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.2rem;
+  }
+
+  .metric-label {
+    font-size: 0.6rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #333;
+  }
+
+  .metric-val {
+    font-size: 4.5rem;
     font-weight: 800;
     line-height: 1;
     font-variant-numeric: tabular-nums;
-    color: #fff;
-    transition: color 0.2s;
+    color: #e8e8e8;
+    transition: color 0.25s;
   }
 
-  #bpm-unit {
-    font-size: 1.4rem;
-    color: #555;
+  #bpm-val { font-size: 6.5rem; }
+
+  .metric-unit {
+    font-size: 0.72rem;
+    color: #444;
     font-weight: 300;
-    margin-bottom: 0.5rem;
   }
 
-  #zone {
-    font-size: 0.75rem;
+  .metric-sub {
+    font-size: 0.6rem;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: #555;
+    color: #444;
     height: 1em;
-    transition: color 0.3s;
+    transition: color 0.25s;
+  }
+
+  #ecg-wrap {
+    width: min(820px, calc(100vw - 4rem));
+    height: 230px;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #06060a;
+  }
+
+  #ecg-canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
   }
 
   #stats {
     display: flex;
-    gap: 3.5rem;
-    font-size: 0.8rem;
-    color: #444;
+    gap: 2.75rem;
+    font-size: 0.65rem;
+    color: #333;
   }
 
-  #stats > span {
+  #stats span {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.3rem;
+    gap: 0.25rem;
   }
 
   #stats strong {
-    color: #aaa;
-    font-size: 1.1rem;
+    color: #777;
+    font-size: 0.9rem;
     font-variant-numeric: tabular-nums;
-  }
-
-  #chart-wrap {
-    width: min(680px, 90vw);
-    height: 160px;
   }
 </style>
 </head>
@@ -92,123 +116,197 @@
 
 <div id="status" class="connecting">connecting</div>
 
-<div id="bpm-display">
-  <span id="bpm">--</span>
-  <span id="bpm-unit">bpm</span>
+<div class="metrics">
+  <div class="metric">
+    <div class="metric-label">heart rate</div>
+    <div class="metric-val" id="bpm-val">--</div>
+    <div class="metric-unit">bpm</div>
+    <div class="metric-sub" id="hr-zone"></div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">stress</div>
+    <div class="metric-val" id="stress-val">--</div>
+    <div class="metric-unit">/ 100</div>
+    <div class="metric-sub" id="stress-label"></div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">hrv · rmssd</div>
+    <div class="metric-val" id="rmssd-val" style="font-size:4rem">--</div>
+    <div class="metric-unit">ms</div>
+    <div class="metric-sub" id="rmssd-label"></div>
+  </div>
 </div>
 
-<div id="zone"></div>
+<div id="ecg-wrap">
+  <canvas id="ecg-canvas"></canvas>
+</div>
 
 <div id="stats">
-  <span>min <strong id="s-min">--</strong></span>
-  <span>max <strong id="s-max">--</strong></span>
-  <span>avg <strong id="s-avg">--</strong></span>
-</div>
-
-<div id="chart-wrap">
-  <canvas id="chart"></canvas>
+  <span>hr min <strong id="s-hr-min">--</strong></span>
+  <span>hr max <strong id="s-hr-max">--</strong></span>
+  <span>hr avg <strong id="s-hr-avg">--</strong></span>
+  <span>stress avg <strong id="s-stress-avg">--</strong></span>
 </div>
 
 <script>
-const MAX_PTS = 60;
-const labels = Array(MAX_PTS).fill('');
-const hrData = Array(MAX_PTS).fill(null);
+// ── ECG canvas setup ─────────────────────────────────────────
+const ecgCanvas = document.getElementById('ecg-canvas');
+const ecgCtx    = ecgCanvas.getContext('2d');
 
-let sMin = Infinity, sMax = -Infinity, sSum = 0, sCount = 0;
+const ECG_N  = 650; // ~5s at 130 Hz
+const ecgBuf = new Float32Array(ECG_N).fill(0);
+let ecgHead  = 0;
+let ecgPeak  = 500;
+let baseline = null;
 
-// HR zone thresholds (% of ~200bpm max, simplified)
-const zones = [
-  { max: 100, label: 'rest',       color: '#60a5fa' },
-  { max: 120, label: 'warm up',    color: '#4ade80' },
-  { max: 140, label: 'aerobic',    color: '#facc15' },
-  { max: 160, label: 'threshold',  color: '#fb923c' },
-  { max: 999, label: 'max',        color: '#f87171' },
-];
+function resizeECG() {
+  const dpr  = window.devicePixelRatio || 1;
+  const rect = ecgCanvas.getBoundingClientRect();
+  ecgCanvas.width  = rect.width  * dpr;
+  ecgCanvas.height = rect.height * dpr;
+  ecgCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener('resize', resizeECG);
+resizeECG();
 
-function getZone(hr) {
-  return zones.find(z => hr <= z.max) ?? zones.at(-1);
+function filterSample(raw) {
+  if (baseline === null) baseline = raw;
+  baseline = 0.999 * baseline + 0.001 * raw; // slow high-pass to kill DC drift
+  return raw - baseline;
 }
 
-const ctx = document.getElementById('chart').getContext('2d');
-const chart = new Chart(ctx, {
-  type: 'line',
-  data: {
-    labels,
-    datasets: [{
-      data: hrData,
-      borderColor: '#f87171',
-      borderWidth: 2,
-      pointRadius: 0,
-      tension: 0.35,
-      fill: { target: 'origin', above: 'rgba(248,113,113,0.07)' },
-      spanGaps: false,
-    }]
-  },
-  options: {
-    animation: false,
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: { legend: { display: false }, tooltip: { enabled: false } },
-    scales: {
-      x: { display: false },
-      y: {
-        min: 40,
-        max: 200,
-        grid: { color: 'rgba(255,255,255,0.04)' },
-        ticks: { color: '#444', font: { size: 11 }, maxTicksLimit: 5 },
-        border: { display: false },
-      }
-    }
+function addEcgSamples(samples) {
+  for (const raw of samples) {
+    const v      = filterSample(raw);
+    ecgBuf[ecgHead] = v;
+    ecgHead      = (ecgHead + 1) % ECG_N;
+    ecgPeak      = Math.max(ecgPeak * 0.9998, Math.abs(v));
   }
-});
-
-function push(hr) {
-  labels.push('');
-  hrData.push(hr);
-  labels.shift();
-  hrData.shift();
-
-  const zone = getZone(hr);
-  chart.data.datasets[0].borderColor = zone.color;
-  chart.data.datasets[0].fill.above = zone.color.replace(')', ', 0.07)').replace('rgb', 'rgba');
-  chart.update('none');
-
-  sMin = Math.min(sMin, hr);
-  sMax = Math.max(sMax, hr);
-  sSum += hr;
-  sCount++;
-
-  document.getElementById('bpm').textContent = hr;
-  document.getElementById('zone').textContent = zone.label;
-  document.getElementById('zone').style.color = zone.color;
-  document.getElementById('s-min').textContent = sMin;
-  document.getElementById('s-max').textContent = sMax;
-  document.getElementById('s-avg').textContent = Math.round(sSum / sCount);
 }
 
+function drawECG() {
+  const w   = ecgCanvas.getBoundingClientRect().width;
+  const h   = ecgCanvas.getBoundingClientRect().height;
+  const mid = h / 2;
+  const sc  = (h * 0.44) / Math.max(ecgPeak, 1);
+
+  // background
+  ecgCtx.fillStyle = '#06060a';
+  ecgCtx.fillRect(0, 0, w, h);
+
+  // subtle grid
+  ecgCtx.strokeStyle = 'rgba(74,222,128,0.04)';
+  ecgCtx.lineWidth = 1;
+  for (let i = 1; i < 5; i++) {
+    ecgCtx.beginPath(); ecgCtx.moveTo(0, h * i / 5); ecgCtx.lineTo(w, h * i / 5); ecgCtx.stroke();
+    ecgCtx.beginPath(); ecgCtx.moveTo(w * i / 5, 0); ecgCtx.lineTo(w * i / 5, h); ecgCtx.stroke();
+  }
+
+  // sweep erase zone
+  const headX  = (ecgHead / ECG_N) * w;
+  const eraseW = Math.max(w * 0.04, 16);
+  ecgCtx.fillStyle = '#06060a';
+  ecgCtx.fillRect(headX, 0, eraseW, h);
+
+  // sweep cursor line
+  ecgCtx.strokeStyle = 'rgba(74,222,128,0.2)';
+  ecgCtx.lineWidth = 1;
+  ecgCtx.beginPath();
+  ecgCtx.moveTo(headX, 0);
+  ecgCtx.lineTo(headX, h);
+  ecgCtx.stroke();
+
+  // ECG trace — draw directly from circular buffer (index i → x = i/N * w)
+  ecgCtx.strokeStyle = '#4ade80';
+  ecgCtx.lineWidth   = 1.5;
+  ecgCtx.lineJoin    = 'round';
+  ecgCtx.beginPath();
+  let pen = false;
+
+  for (let i = 0; i < ECG_N; i++) {
+    const x       = (i / ECG_N) * w;
+    const inErase = x >= headX && x <= headX + eraseW;
+    if (inErase) { pen = false; continue; }
+    const y = mid - ecgBuf[i] * sc;
+    if (!pen) { ecgCtx.moveTo(x, y); pen = true; }
+    else ecgCtx.lineTo(x, y);
+  }
+  ecgCtx.stroke();
+
+  requestAnimationFrame(drawECG);
+}
+drawECG();
+
+// ── zones ────────────────────────────────────────────────────
+const hrZones = [
+  { max: 100, label: 'rest',      color: '#60a5fa' },
+  { max: 120, label: 'warm up',   color: '#4ade80' },
+  { max: 140, label: 'aerobic',   color: '#facc15' },
+  { max: 160, label: 'threshold', color: '#fb923c' },
+  { max: 999, label: 'max',       color: '#f87171' },
+];
+const stressZones = [
+  { max: 25,  label: 'relaxed',  color: '#4ade80' },
+  { max: 50,  label: 'low',      color: '#a3e635' },
+  { max: 75,  label: 'moderate', color: '#facc15' },
+  { max: 999, label: 'high',     color: '#f87171' },
+];
+const getHrZone     = hr => hrZones.find(z => hr <= z.max);
+const getStressZone = s  => stressZones.find(z => s  <= z.max);
+
+// ── session stats ─────────────────────────────────────────────
+let sHrMin = Infinity, sHrMax = -Infinity, sHrSum = 0;
+let sStressSum = 0, sCount = 0;
+
+function onHr({ hr, rmssd, stress }) {
+  const hrz = getHrZone(hr);
+  document.getElementById('bpm-val').textContent  = hr;
+  document.getElementById('hr-zone').textContent  = hrz.label;
+  document.getElementById('hr-zone').style.color  = hrz.color;
+
+  sHrMin = Math.min(sHrMin, hr);
+  sHrMax = Math.max(sHrMax, hr);
+  sHrSum += hr;
+  sCount++;
+  document.getElementById('s-hr-min').textContent = sHrMin;
+  document.getElementById('s-hr-max').textContent = sHrMax;
+  document.getElementById('s-hr-avg').textContent = Math.round(sHrSum / sCount);
+
+  if (rmssd != null) {
+    const lbl = rmssd > 60 ? 'excellent' : rmssd > 40 ? 'good' : rmssd > 20 ? 'fair' : 'low';
+    document.getElementById('rmssd-val').textContent   = rmssd.toFixed(1);
+    document.getElementById('rmssd-label').textContent = lbl;
+  }
+
+  if (stress != null) {
+    const sz = getStressZone(stress);
+    document.getElementById('stress-val').textContent   = stress;
+    document.getElementById('stress-val').style.color   = sz.color;
+    document.getElementById('stress-label').textContent = sz.label;
+    document.getElementById('stress-label').style.color = sz.color;
+    sStressSum += stress;
+    document.getElementById('s-stress-avg').textContent = Math.round(sStressSum / sCount);
+  }
+}
+
+// ── WebSocket ─────────────────────────────────────────────────
 function connect() {
-  const ws = new WebSocket(`ws://${location.host}/ws`);
-  const statusEl = document.getElementById('status');
+  const ws  = new WebSocket(`ws://${location.host}/ws`);
+  const el  = document.getElementById('status');
 
-  ws.onopen = () => {
-    statusEl.textContent = 'connected';
-    statusEl.className = 'connected';
-  };
-
+  ws.onopen    = () => { el.textContent = 'connected';   el.className = 'connected'; };
   ws.onmessage = e => {
-    const { hr } = JSON.parse(e.data);
-    push(hr);
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'hr')  onHr(msg);
+    if (msg.type === 'ecg') addEcgSamples(msg.samples);
   };
-
-  ws.onclose = () => {
-    statusEl.textContent = 'reconnecting';
-    statusEl.className = 'connecting';
+  ws.onclose   = () => {
+    el.textContent = 'reconnecting';
+    el.className   = 'connecting';
     setTimeout(connect, 2000);
   };
-
   ws.onerror = () => ws.close();
 }
-
 connect();
 </script>
 </body>
