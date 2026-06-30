@@ -153,48 +153,65 @@
 const ecgCanvas = document.getElementById('ecg-canvas');
 const ecgCtx    = ecgCanvas.getContext('2d');
 
-const ECG_N  = 650; // ~5s at 130 Hz
-const ecgBuf = new Float32Array(ECG_N).fill(0);
-let ecgHead  = 0;
-let ecgPeak  = 500;
-let baseline = null;
+const ECG_N   = 650;   // ~5s at 130 Hz
+const ECG_HZ  = 130;
+const ecgBuf  = new Float32Array(ECG_N).fill(0);
+let ecgHead   = 0;
+let ecgPeak   = 500;
+let baseline  = null;
+
+// incoming sample queue — drained at 130Hz in rAF to avoid burst jumps
+const ecgQueue = [];
+let rafTime    = null;
+
+// cached dims — updated only on resize, never inside rAF
+let ecgW = 0, ecgH = 0;
 
 function resizeECG() {
-  const dpr  = window.devicePixelRatio || 1;
-  const rect = ecgCanvas.getBoundingClientRect();
-  ecgCanvas.width  = rect.width  * dpr;
-  ecgCanvas.height = rect.height * dpr;
-  ecgCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const rect   = ecgCanvas.getBoundingClientRect();
+  ecgCanvas.width  = Math.round(rect.width);
+  ecgCanvas.height = Math.round(rect.height);
+  ecgW = ecgCanvas.width;
+  ecgH = ecgCanvas.height;
 }
 window.addEventListener('resize', resizeECG);
 resizeECG();
 
 function filterSample(raw) {
   if (baseline === null) baseline = raw;
-  baseline = 0.999 * baseline + 0.001 * raw; // slow high-pass to kill DC drift
+  baseline = 0.999 * baseline + 0.001 * raw;
   return raw - baseline;
 }
 
 function addEcgSamples(samples) {
-  for (const raw of samples) {
-    const v      = filterSample(raw);
-    ecgBuf[ecgHead] = v;
-    ecgHead      = (ecgHead + 1) % ECG_N;
-    ecgPeak      = Math.max(ecgPeak * 0.9998, Math.abs(v));
-  }
+  for (const raw of samples) ecgQueue.push(filterSample(raw));
+  // drop backlog beyond 2s so lag can't accumulate
+  if (ecgQueue.length > ECG_HZ * 2) ecgQueue.splice(0, ecgQueue.length - ECG_HZ * 2);
 }
 
-function drawECG() {
-  const w   = ecgCanvas.getBoundingClientRect().width;
-  const h   = ecgCanvas.getBoundingClientRect().height;
+function drawECG(ts) {
+  // drain the queue at exactly 130Hz — decouples display from batch arrival
+  if (rafTime !== null && ecgQueue.length > 0) {
+    const toDrain = Math.min(Math.round((ts - rafTime) * ECG_HZ / 1000), ecgQueue.length);
+    for (let i = 0; i < toDrain; i++) {
+      const v         = ecgQueue.shift();
+      ecgBuf[ecgHead] = v;
+      ecgHead         = (ecgHead + 1) % ECG_N;
+      ecgPeak         = Math.max(ecgPeak * 0.9998, Math.abs(v));
+    }
+  }
+  rafTime = ts;
+
+  const w   = ecgW, h = ecgH;
+  if (!w || !h) { requestAnimationFrame(drawECG); return; }
+
   const mid = h / 2;
   const sc  = (h * 0.44) / Math.max(ecgPeak, 1);
 
-  // background
   ecgCtx.fillStyle = '#06060a';
   ecgCtx.fillRect(0, 0, w, h);
 
-  // subtle grid
+  // grid
   ecgCtx.strokeStyle = 'rgba(74,222,128,0.04)';
   ecgCtx.lineWidth = 1;
   for (let i = 1; i < 5; i++) {
@@ -202,27 +219,20 @@ function drawECG() {
     ecgCtx.beginPath(); ecgCtx.moveTo(w * i / 5, 0); ecgCtx.lineTo(w * i / 5, h); ecgCtx.stroke();
   }
 
-  // sweep erase zone
+  // erase zone + sweep cursor
   const headX  = (ecgHead / ECG_N) * w;
   const eraseW = Math.max(w * 0.04, 16);
   ecgCtx.fillStyle = '#06060a';
   ecgCtx.fillRect(headX, 0, eraseW, h);
-
-  // sweep cursor line
   ecgCtx.strokeStyle = 'rgba(74,222,128,0.2)';
   ecgCtx.lineWidth = 1;
-  ecgCtx.beginPath();
-  ecgCtx.moveTo(headX, 0);
-  ecgCtx.lineTo(headX, h);
-  ecgCtx.stroke();
+  ecgCtx.beginPath(); ecgCtx.moveTo(headX, 0); ecgCtx.lineTo(headX, h); ecgCtx.stroke();
 
-  // ECG trace — draw directly from circular buffer (index i → x = i/N * w)
+  // ECG trace
   ecgCtx.strokeStyle = '#4ade80';
   ecgCtx.lineWidth   = 1.5;
-  ecgCtx.lineJoin    = 'round';
   ecgCtx.beginPath();
   let pen = false;
-
   for (let i = 0; i < ECG_N; i++) {
     const x       = (i / ECG_N) * w;
     const inErase = x >= headX && x <= headX + eraseW;
@@ -235,7 +245,7 @@ function drawECG() {
 
   requestAnimationFrame(drawECG);
 }
-drawECG();
+drawECG(0);
 
 // ── zones ────────────────────────────────────────────────────
 const hrZones = [
